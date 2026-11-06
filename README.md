@@ -14,7 +14,7 @@
 发布 npm 后可安装：
 
 ```bash
-pi install npm:pi2tg
+pi install npm:@susanaluis877/pi2tg
 ```
 
 或从 GitHub 安装：
