@@ -7,6 +7,9 @@ import { Telegram, type Panel } from "./telegram.ts";
 import { Progress } from "./progress.ts";
 import { Buttons } from "./buttons.ts";
 import { MAX_IMAGE_BYTES } from "./images.ts";
+import { Type } from "typebox";
+import { Questions } from "./questions.ts";
+import { readDelivery } from "./delivery.ts";
 
 const HELP = `pi2tg：控制当前终端会话
 普通文本：空闲时执行，忙碌时排队
@@ -19,10 +22,20 @@ const HELP = `pi2tg：控制当前终端会话
 /reload：空闲后热加载插件，取消未投递待办
 /help：使用说明
 支持文本、照片和图片文件（≤10 MiB）；图片说明一起提交。
-图片不支持 /steer，相册按单张处理。权限确认仍需在终端处理。`;
+图片不支持 /steer，相册按单张处理。权限确认仍需在终端处理。
+Agent 可用 telegram_ask 提问，请点击选项或回复原问题消息。
+可要求 agent 用 telegram_send_file 回传项目内交付物。`;
 
 export default function (pi: ExtensionAPI) {
   const buttons = new Buttons();
+  const questions = new Questions((question, answer) => {
+    if (!ctx || !bot || reloadRequested || inbox.stopping) return false;
+    const content = `用户补答了本会话中已超时的问题。请结合当前任务状态继续；这不是权限审批。\n\n原问题：\n${question}\n\n用户答案：\n${answer}`;
+    if (!inbox.enqueue(content, false)) { say("补答暂未提交：任务队列已满，请稍后重试。"); return false; }
+    say("已接收补答，将作为新的继续任务指令处理；忙碌时排队。");
+    dispatch();
+    return true;
+  });
   let generation = 0;
   const controls = () => buttons.keyboard([
     [{ text: "📊 状态", command: "/status" }, { text: "🤖 模型", command: "/models" }],
@@ -59,7 +72,7 @@ export default function (pi: ExtensionAPI) {
   const refreshPanel = (urgent = false) => {
     if (!progress || !panel || !bot) return;
     if (progress.ended === undefined) {
-      progress.state = inbox.stopping ? "⏹ 正在停止" : waiting ? "⏸ 等待终端确认" : reloadRequested ? "⏳ 执行中 · 结束后重载" : "⏳ 正在执行";
+      progress.state = inbox.stopping ? "⏹ 正在停止" : waiting ? "⏸ 等待终端确认" : questions.active ? "⏸ 等待 Telegram 回复" : reloadRequested ? "⏳ 执行中 · 结束后重载" : "⏳ 正在执行";
     }
     const now = Date.now();
     if (!urgent && now - lastPanelUpdate < (dirty ? 4000 : 15000)) return;
@@ -67,6 +80,48 @@ export default function (pi: ExtensionAPI) {
     lastPanelUpdate = now;
     dirty = false;
   };
+
+  pi.registerTool({
+    name: "telegram_ask",
+    label: "Telegram 提问",
+    description: "Ask the authorized Telegram user a clarification question. Waits for a single-choice or reply-to text answer. Only use for requirements, NEVER as permission approval. If unanswered/cancelled, do not assume consent or repeat automatically.",
+    executionMode: "sequential",
+    parameters: Type.Object({
+      question: Type.String({ minLength: 1, maxLength: 2000 }),
+      options: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 80 }), { maxItems: 8 })),
+      timeoutSeconds: Type.Optional(Type.Integer({ minimum: 30, maximum: 900 })),
+    }),
+    async execute(_id, params, signal) {
+      if (!bot || reloadRequested || inbox.stopping) throw new Error("Telegram 不可用或正在停止/重载");
+      const answer = await questions.ask(bot, params.question, params.options ?? [], params.timeoutSeconds ?? 300, signal, () => refreshPanel(true));
+      return {
+        content: [{ type: "text", text: JSON.stringify(answer) }], details: answer,
+        // No default consent, and do not keep acting after cancellation/timeout.
+        ...(answer.status !== "answered" ? { terminate: true } : {}),
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "telegram_send_file",
+    label: "Telegram 发送交付物",
+    description: "Send a user-requested or directly task-related project artifact to the authorized Telegram user. Never send secrets, credentials, unrelated files or entire projects. Only regular project files up to 10 MiB; no symlinks/hardlinks. photo=true is for JPEG/PNG previews; otherwise sends a downloadable document. This does not generate screenshots. Failed/ambiguous uploads must not be blindly retried.",
+    executionMode: "sequential",
+    parameters: Type.Object({
+      path: Type.String({ minLength: 1 }),
+      caption: Type.Optional(Type.String({ maxLength: 900 })),
+      photo: Type.Optional(Type.Boolean()),
+    }),
+    async execute(_id, params, signal, _onUpdate, toolCtx) {
+      const currentBot = bot;
+      if (!currentBot || reloadRequested || inbox.stopping || !toolCtx.isProjectTrusted()) throw new Error("Telegram 不可用或项目未受信任");
+      const file = await readDelivery(toolCtx.cwd, params.path, signal);
+      if (params.photo && !["image/jpeg", "image/png"].includes(file.mime)) throw new Error("预览只支持 JPEG/PNG；其他文件请作为 document 发送");
+      if (currentBot !== bot || reloadRequested || inbox.stopping) throw new Error("会话状态已变化，取消发送");
+      const result = await currentBot.sendFile(file, params.caption ?? "", params.photo ?? false, signal);
+      return { content: [{ type: "text", text: `已发送 ${file.name}，Telegram message_id=${result.message_id}` }], details: { messageId: result.message_id, name: file.name } };
+    },
+  });
 
   // Only a command context exposes reload(). Follow Pi's reload-runtime example.
   pi.registerCommand("pi2tg-reload", {
@@ -143,6 +198,11 @@ export default function (pi: ExtensionAPI) {
         bot?.answerCallback(callback.id, "无权操作");
         return;
       }
+      if (callback.data?.startsWith("ask:")) {
+        const accepted = questions.answerButton(callback.data);
+        bot?.answerCallback(callback.id, accepted ? "已接收" : "问题不可补答或当前暂不能接收，请检查状态");
+        return;
+      }
       const action = buttons.take(callback.data ?? "", generation);
       if (!action) { bot?.answerCallback(callback.id, "按钮已使用、过期或执行状态已变化。请发送 /help 获取新按钮。"); return; }
       bot?.answerCallback(callback.id, action.confirm ? "请确认操作" : "已接收");
@@ -159,6 +219,11 @@ export default function (pi: ExtensionAPI) {
     if (update.message?.photo?.length || update.message?.document) { receiveImage(update); return; }
     const text = update.message?.text?.trim();
     if (!text) { say("支持文本、照片和 PNG/JPEG/WebP/GIF 图片文件。"); return; }
+    const replied = update.message?.reply_to_message;
+    if (replied && !/^\/(stop|reload)(?:\s|$)/.test(text)) {
+      if (questions.answerText(replied.message_id, text)) return;
+      if (replied.text?.startsWith("❓ ") || replied.text?.startsWith("问题：")) { say("该问题不可补答或当前暂不能接收，回答未提交。可检查状态或另发明确的新任务。"); return; }
+    }
     const [command] = text.split(/\s+/);
     if (command === "/start" || command === "/help") { bot?.send(HELP, false, controls()); return; }
     if (command === "/models") {
@@ -197,7 +262,7 @@ export default function (pi: ExtensionAPI) {
       return;
     }
     if (command === "/status") {
-      const state = waiting ? "等待终端操作" : inbox.stopping ? "正在停止" : ctx.isIdle() && !inbox.reserved ? "空闲" : "执行中";
+      const state = questions.active ? "等待 Telegram 回复" : waiting ? "等待终端操作" : inbox.stopping ? "正在停止" : ctx.isIdle() && !inbox.reserved ? "空闲" : "执行中";
       say(`状态：${state}\n模型：${ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "未选择"}\n待重载：${reloadRequested ? "是" : "否"}\n图片下载：${downloads.size}\n待投递插话：${inbox.steering.length}\n\n${progress ? progress.render(inbox.tasks.length) : `Telegram 待办：${inbox.tasks.length}`}`);
       return;
     }
@@ -205,6 +270,7 @@ export default function (pi: ExtensionAPI) {
       if (switchingModel) { say("正在切换模型，请稍后重载。"); return; }
       if (reloadRequested) { say("重载已请求，正在等待 Pi 空闲。"); return; }
       reloadRequested = true;
+      questions.cancel();
       cancelDownloads();
       const count = inbox.tasks.length + inbox.steering.length;
       inbox.tasks = []; inbox.steering = [];
@@ -214,6 +280,7 @@ export default function (pi: ExtensionAPI) {
       return;
     }
     if (command === "/stop") {
+      questions.cancel();
       cancelDownloads();
       const count = inbox.stop();
       refreshPanel(true);
@@ -244,6 +311,7 @@ export default function (pi: ExtensionAPI) {
       if (!config) return;
       releaseLock = await acquireBotLock(config.token, () => {
         warn("pi2tg 实例锁失效，正在关闭 Telegram 连接。请排查重复实例后 /reload。");
+        questions.cancel();
         cancelDownloads();
         clearInterval(progressTimer);
         inbox.stop();
@@ -342,6 +410,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("agent_settled", (event, context) => {
     ctx = context;
     if (event.aborted) {
+      questions.cancel();
       cancelDownloads();
       const n = inbox.stop();
       if (n) say(`执行被中止，已取消 ${n} 条 Telegram 待办或插话。`);
@@ -362,6 +431,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", async () => {
+    questions.cancel();
     cancelDownloads();
     clearInterval(progressTimer);
     clearTimeout(dispatchTimer);

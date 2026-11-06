@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Add `telegram_ask` for cancellable single-choice or reply-to text clarification, without replacing permission approvals.
+- Add `telegram_send_file` for bounded project artifact uploads and PNG/JPEG previews.
+- Share outbound flood control with tool requests, propagate delivery failures and cancel queued requests on shutdown.
+
 ## [0.1.0]
 
 Initial preview release targeting Pi 1.5.0.

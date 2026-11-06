@@ -18,6 +18,7 @@ export interface Update {
   };
   message?: {
     from?: { id: number; is_bot?: boolean }; chat: { id: number; type: string }; text?: string;
+    reply_to_message?: { message_id: number; text?: string };
     caption?: string;
     photo?: { file_id: string; width: number; height: number; file_size?: number }[];
     document?: { file_id: string; mime_type?: string; file_size?: number; file_name?: string };

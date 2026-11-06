@@ -8,8 +8,12 @@
     "url": "git+https://github.com/susanaluis877-ship-it/pi2tg.git"
   },
   "homepage": "https://github.com/susanaluis877-ship-it/pi2tg#readme",
-  "bugs": { "url": "https://github.com/susanaluis877-ship-it/pi2tg/issues" },
-  "publishConfig": { "access": "public" },
+  "bugs": {
+    "url": "https://github.com/susanaluis877-ship-it/pi2tg/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "description": "Control and monitor the current Pi session through a private Telegram bot",
   "type": "module",
   "keywords": [
@@ -37,13 +41,15 @@
     "prepublishOnly": "npm run typecheck && npm test"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*"
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "1.5.0",
     "@types/node": "^22.0.0",
     "@types/proper-lockfile": "^4.1.4",
     "tsx": "^4.20.0",
+    "typebox": "^1.4.4",
     "typescript": "^5.9.0"
   },
   "dependencies": {

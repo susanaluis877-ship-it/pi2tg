@@ -17,7 +17,8 @@ class ApiError extends Error {
 
 export interface Panel { id?: number; text: string; queued: boolean; disabled?: boolean }
 type Message = RenderedMessage & { reply_markup?: Keyboard };
-type Outgoing = Message | { panel: Panel };
+interface RequestJob { run: () => Promise<void>; cancel: () => void }
+type Outgoing = Message | { panel: Panel } | RequestJob;
 
 export class Telegram {
   private controller = new AbortController();
@@ -28,10 +29,10 @@ export class Telegram {
   private offset = 0;
   constructor(private config: Config, private warn: (message: string) => void) {}
 
-  private async call<T>(method: string, body: object): Promise<T> {
+  private async call<T>(method: string, body: object, signal?: AbortSignal): Promise<T> {
     const response = await fetch(`https://api.telegram.org/bot${this.config.token}/${method}`, {
-      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
-      signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(40_000)]),
+      method: "POST", ...(body instanceof FormData ? { body } : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
+      signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(40_000), ...(signal ? [signal] : [])]),
     });
     const data = await response.json() as { ok: boolean; result: T; error_code?: number; parameters?: { retry_after?: number }; description?: string };
     if (!data.ok) throw new ApiError(data.error_code ?? response.status, data.parameters?.retry_after, data.description?.includes("message is not modified") ?? false);
@@ -62,6 +63,52 @@ export class Telegram {
       signal: AbortSignal.any([signal, this.controller.signal, AbortSignal.timeout(30_000)]),
     });
     return readImage(response);
+  }
+
+  /** Tool requests share flood control with notifications. Never retry ambiguous sends. */
+  private request<T>(method: string, body: object, signal?: AbortSignal): Promise<T> {
+    const combined = AbortSignal.any([this.controller.signal, ...(signal ? [signal] : [])]);
+    if (combined.aborted || this.outbox.length >= 500) return Promise.reject(new Error("发送已取消或队列已满"));
+    return new Promise<T>((resolve, reject) => {
+      let done = false;
+      const finish = (error?: unknown, result?: T) => {
+        if (done) return;
+        done = true;
+        combined.removeEventListener("abort", cancel);
+        if (error) reject(error); else resolve(result!);
+      };
+      const cancel = () => finish(new Error("发送已取消"));
+      combined.addEventListener("abort", cancel, { once: true });
+      this.outbox.push({ cancel, run: async () => {
+        if (done) return;
+        try {
+          for (let attempt = 0; ; attempt++) {
+            try { finish(undefined, await this.call<T>(method, body, combined)); break; }
+            catch (error) {
+              if (!(error instanceof ApiError) || error.code !== 429 || attempt >= 2) throw error;
+              await delay(Math.min(60, error.retryAfter) * 1000, undefined, { signal: combined });
+            }
+          }
+        } catch { finish(new Error("Telegram 发送失败或已取消；响应丢失时可能已送达，请勿盲目重试")); }
+      }});
+      if (!this.sending) this.sender = this.drain();
+    });
+  }
+
+  sendQuestion(text: string, keyboard: Keyboard, signal: AbortSignal): Promise<{ message_id: number }> {
+    return this.request("sendMessage", { chat_id: this.config.userId, text, reply_markup: keyboard }, signal);
+  }
+
+  finishQuestion(id: number, text: string, keyboard: Keyboard = { inline_keyboard: [] }): void {
+    void this.request("editMessageText", { chat_id: this.config.userId, message_id: id, text, reply_markup: keyboard }).catch(() => {});
+  }
+
+  sendFile(file: { bytes: Uint8Array; name: string; mime: string }, caption: string, photo: boolean, signal?: AbortSignal): Promise<{ message_id: number }> {
+    const form = new FormData();
+    form.set("chat_id", String(this.config.userId));
+    if (caption) form.set("caption", caption);
+    form.set(photo ? "photo" : "document", new Blob([new Uint8Array(file.bytes)], { type: file.mime }), file.name);
+    return this.request(photo ? "sendPhoto" : "sendDocument", form, signal);
   }
 
   answerCallback(id: string, text: string): void {
@@ -104,6 +151,11 @@ export class Telegram {
     try {
       while (this.outbox.length && !this.controller.signal.aborted) {
         const job = this.outbox.shift()!;
+        if ("run" in job) {
+          await job.run();
+          await this.pause(1100);
+          continue;
+        }
         const panel = "panel" in job ? job.panel : undefined;
         const message: RenderedMessage = panel ? { text: panel.text } : job as RenderedMessage;
         for (let attempt = 0; attempt < 5; attempt++) {

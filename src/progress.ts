@@ -54,7 +54,7 @@ export class Progress {
     const seconds = Math.max(0, Math.floor(((this.ended ?? now) - this.started) / 1000));
     const elapsed = `${Math.floor(seconds / 60)}分${seconds % 60}秒`;
     const active = [...this.active.values()];
-    const current = this.state.includes("等待终端") ? "请回到终端处理确认或输入" : active.length ? `${active.length > 1 ? `${active.length} 个工具并行\n` : ""}${active.slice(0, 2).map(t => `${t.label} · ${Math.max(0, Math.floor((now - t.started) / 1000))}秒`).join("\n")}` : this.activity;
+    const current = this.state.includes("等待 Telegram") ? "请选择问题按钮，或回复原问题消息输入答案" : this.state.includes("等待终端") ? "请回到终端处理确认或输入" : active.length ? `${active.length > 1 ? `${active.length} 个工具并行\n` : ""}${active.slice(0, 2).map(t => `${t.label} · ${Math.max(0, Math.floor((now - t.started) / 1000))}秒`).join("\n")}` : this.activity;
     return `${this.state} · ${elapsed}\n任务：${short(this.task || "当前会话任务", 100)}\n\n${this.ended === undefined ? `当前：${current}\n\n` : ""}读取 ${this.counts.read}次 · 修改 ${this.counts.change}次 · 命令 ${this.counts.command}次 · 其他 ${this.counts.other}次\n工具调用 ${this.total}次 · 失败 ${this.errors}次\nTelegram 待办 ${pending}条${this.recent.length ? `\n\n最近活动\n${this.recent.join("\n")}` : ""}`;
   }
 }
