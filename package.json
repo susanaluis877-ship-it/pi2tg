@@ -1,0 +1,53 @@
+{
+  "name": "pi2tg",
+  "version": "0.1.0",
+  "author": "susanaluis877",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/susanaluis877-ship-it/pi2tg.git"
+  },
+  "homepage": "https://github.com/susanaluis877-ship-it/pi2tg#readme",
+  "bugs": { "url": "https://github.com/susanaluis877-ship-it/pi2tg/issues" },
+  "publishConfig": { "access": "public" },
+  "description": "Control and monitor the current Pi session through a private Telegram bot",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "telegram"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    ".env.example"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run typecheck && npm test"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "1.5.0",
+    "@types/node": "^22.0.0",
+    "@types/proper-lockfile": "^4.1.4",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  },
+  "dependencies": {
+    "marked": "^18.1.3",
+    "proper-lockfile": "^4.1.2"
+  }
+}
